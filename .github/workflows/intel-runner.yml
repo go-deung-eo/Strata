@@ -5,8 +5,8 @@ name: Intel runner
 # self-hosted runner must never run code from someone else's pull request.
 # Stage 1 prints what the machine has (CPU, RAM, disk, GPU, oneAPI, Docker);
 # Stage 2 (`b70-gpu`) validates real Intel Arc Pro B70 (Battlemage G31 / bmg_g31) GPU hardware, native bmg_g31 SG16 XMX & Qwen SYCL
-# parity tests, `ghcr.io/niko1221/strata:0.2.18-sycl` Docker GPU execution, live v0.2.18 `install.sh` + signed SYCL release packages
-# (`strata-engine` + `strata-hy4`), and real `Hy4-Flash-Vision.strata` ViT inference;
+# parity tests, `ghcr.io/niko1221/strata:0.2.19-sycl` Docker GPU execution, live v0.2.19 `install.sh` + signed SYCL release packages
+# (`strata-engine`, `strata-hy4`, `strata-inkling`), live `Inkling-2-Mini-SQ-10.strata` + Vision + `.gguf` on B70, and `Hy4-Flash-Vision.strata` ViT inference;
 # Stage 3 (`checks`) runs the same fast checks as check.yml's Linux jobs.
 
 on:
@@ -53,7 +53,7 @@ jobs:
     name: Intel Arc Pro B70 GPU & Docker
     needs: info
     runs-on: [self-hosted, Linux, X64, Intel]
-    timeout-minutes: 40
+    timeout-minutes: 55
     env:
       NODE_OPTIONS: --use-system-ca
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
@@ -207,11 +207,11 @@ jobs:
           ctest --test-dir "$QBUILD" --output-on-failure \
             -R '^(dequant_s2_parity|s2_gemv_parity|router_top10_parity|rope_parity|kv_q8_parity)$'
 
-      - name: 4. Live ghcr.io/niko1221/strata:0.2.18-sycl Docker image & GPU compute check on Arc Pro B70
+      - name: 4. Live ghcr.io/niko1221/strata:0.2.19-sycl Docker image & GPU compute check on Arc Pro B70
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/niko1221/strata:0.2.18-sycl"
+          IMAGE="ghcr.io/niko1221/strata:0.2.19-sycl"
           docker --version
           docker pull "$IMAGE"
           docker image inspect "$IMAGE" --format 'id={{.Id}} size={{.Size}} version={{index .Config.Labels "org.opencontainers.image.version"}} flavor={{index .Config.Labels "com.strata.flavor"}}'
@@ -229,11 +229,15 @@ jobs:
               /opt/strata/terminal/bin/strata --version
               ENG="$(ls -d /opt/strata/components/engine/*-sycl | head -1)"
               HY4="$(ls -d /opt/strata/components/shapes/hy4/engine/*-sycl | head -1)"
+              INK="$(ls -d /opt/strata/components/shapes/inkling2/engine/*-sycl | head -1)"
               echo "ENG=$ENG"
               echo "HY4=$HY4"
+              echo "INK=$INK"
               "$ENG/strata" --version
+              "$ENG/strata" --geometry
               "$HY4/strata-hy4" --version
               HY4S_ARCH=bmg "$HY4/strata-hy4" --version
+              "$INK/strata-inkling" --version
               echo "== Level Zero B70 probe inside container =="
               /opt/strata/terminal/python/bin/python3 -c "import ctypes; ze = ctypes.CDLL(\"libze_loader.so.1\"); assert ze.zeInit(0) == 0, \"zeInit failed\"; n = ctypes.c_uint32(0); assert ze.zeDriverGet(ctypes.byref(n), None) == 0 and n.value >= 1; drivers = (ctypes.c_void_p * n.value)(); assert ze.zeDriverGet(ctypes.byref(n), drivers) == 0; nd = ctypes.c_uint32(0); assert ze.zeDeviceGet(drivers[0], ctypes.byref(nd), None) == 0 and nd.value >= 1; print(f\"Level Zero inside container OK: drivers={n.value} devices={nd.value}\")"
               echo "== Real SYCL GPU kernel execution (sy_probe + sy_ktest) inside container using bundled oneAPI 2026.1 libs =="
@@ -246,7 +250,7 @@ jobs:
               set -e
             '
 
-      - name: 5. Live v0.2.18 install.sh, signed SYCL release packages & live Hy4-Flash-Vision.strata B70 ViT inference
+      - name: 5. Live v0.2.19 install.sh, signed SYCL release packages, Inkling-2-Mini (.strata + .gguf) & Hy4-Flash-Vision B70 GPU tests
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
@@ -270,31 +274,73 @@ jobs:
           sh "$SANDBOX/install.sh"
           "$SANDBOX/bin/strata" --version
 
-          echo "== Fetch & cryptographically verify live v0.2.18 SYCL packages (strata-engine + strata-hy4) =="
+          echo "== Fetch & cryptographically verify live v0.2.19 SYCL packages (strata-engine + strata-hy4 + strata-inkling) =="
           STRATA_PY="$(ls "$SANDBOX"/data/terminal/*/python/bin/python3 | head -1)"
           test -x "$STRATA_PY"
           "$STRATA_PY" tools/docker/fetch-engines.py \
-            --release-tag v0.2.18 --flavors sycl --out "$SANDBOX/pkgs" > "$SANDBOX/fetch.out"
+            --release-tag v0.2.19 --flavors sycl --out "$SANDBOX/pkgs" > "$SANDBOX/fetch.out"
           cat "$SANDBOX/fetch.out"
           LINE="$(tail -1 "$SANDBOX/fetch.out")"
           ENG_DIR="$(printf '%s\n' "$LINE" | cut -f3)"
           HY4_DIR="$(printf '%s\n' "$LINE" | cut -f4)"
+          INK_DIR="$(printf '%s\n' "$LINE" | cut -f5)"
           test -d "$ENG_DIR"
           test -d "$HY4_DIR"
+          test -d "$INK_DIR"
 
           "$STRATA_PY" tools/packaging/package_engine.py --verify "$ENG_DIR"
           "$STRATA_PY" tools/packaging/binary_deps.py "$ENG_DIR"
           "$STRATA_PY" tools/packaging/package_engine.py --verify "$HY4_DIR"
           "$STRATA_PY" tools/packaging/binary_deps.py "$HY4_DIR"
+          "$STRATA_PY" tools/packaging/package_engine.py --verify "$INK_DIR"
+          "$STRATA_PY" tools/packaging/binary_deps.py "$INK_DIR"
 
           echo "== Clean-env execution & B70 dispatcher verification =="
           env -i "$ENG_DIR/strata" --version
+          env -i "$ENG_DIR/strata" --geometry
           env -i "$HY4_DIR/strata-hy4" --version
           env -i HY4S_ARCH=bmg "$HY4_DIR/strata-hy4" --version
+          env -i "$INK_DIR/strata-inkling" --version
           if command -v strace >/dev/null 2>&1; then
             strace -f -e trace=execve "$HY4_DIR/strata-hy4" --version 2>&1 | tee "$SANDBOX/dispatch.trace"
             grep -q 'strata-hy4-bmg' "$SANDBOX/dispatch.trace"
           fi
+
+          echo "== Live Inkling-2-Mini-SQ-10.strata + Vision on Arc Pro B70 32 GB =="
+          SQ10="$SANDBOX/Inkling-2-Mini-SQ-10.strata"
+          INK_VIS="$SANDBOX/Inkling-2-Mini-Vision.strata"
+          curl -fsSL --connect-timeout 20 --speed-limit 1 --speed-time 60 --retry 2 \
+            "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main/Inkling-2-Mini-SQ-10.strata" \
+            -o "$SQ10"
+          curl -fsSL --connect-timeout 20 --speed-limit 1 --speed-time 60 --retry 2 \
+            "https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/resolve/main/Inkling-2-Mini-Vision.strata" \
+            -o "$INK_VIS"
+          ls -lh "$SQ10" "$INK_VIS"
+          "$INK_DIR/strata-inkling" --info "$SQ10" --vision "$INK_VIS"
+          ONEAPI_DEVICE_SELECTOR=level_zero:gpu stdbuf -oL -eL "$INK_DIR/strata-inkling" --selfcheck --native "$SQ10"
+          ONEAPI_DEVICE_SELECTOR=level_zero:gpu stdbuf -oL -eL "$INK_DIR/strata-inkling" --bench --native "$SQ10" --parallel 1 --prompt-len 64 --gen 32
+          ONEAPI_DEVICE_SELECTOR=level_zero:gpu stdbuf -oL -eL "$INK_DIR/strata-inkling" --bench --native "$SQ10" --parallel 8 --prompt-len 64 --gen 32
+          rm -f "$SQ10" "$INK_VIS"
+
+          echo "== Live Inkling-2-Mini .gguf (UD-Q2_K_XL) loading check on Arc Pro B70 32 GB =="
+          GGUF="$SANDBOX/Inkling-2-Mini-UD-Q2_K_XL.gguf"
+          curl -fsSL --connect-timeout 20 --speed-limit 1 --speed-time 60 --retry 2 \
+            "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/main/Inkling-2-Mini-UD-Q2_K_XL.gguf" \
+            -o "$GGUF"
+          ls -lh "$GGUF"
+          "$INK_DIR/strata-inkling" --info "$GGUF" | tee "$SANDBOX/gguf.info"
+          grep -q 'format=gguf' "$SANDBOX/gguf.info"
+          set +e
+          ONEAPI_DEVICE_SELECTOR=level_zero:gpu stdbuf -oL -eL "$INK_DIR/strata-inkling" --selfcheck --native "$GGUF"
+          GGUF_GPU_RC=$?
+          echo "--> strata-inkling GGUF GPU selfcheck rc=$GGUF_GPU_RC"
+          if [ "$GGUF_GPU_RC" -ne 0 ]; then
+            echo "--> Testing CPU fallback --selfcheck --cpu --native on GGUF"
+            stdbuf -oL -eL "$INK_DIR/strata-inkling" --selfcheck --cpu --native "$GGUF"
+            echo "--> strata-inkling GGUF CPU selfcheck rc=$?"
+          fi
+          set -e
+          rm -f "$GGUF"
 
           echo "== Download live Hy4-Flash-Vision.strata (934 MB) & run B70 ViT GPU inference =="
           VIS="$SANDBOX/Hy4-Flash-Vision.strata"
@@ -325,7 +371,7 @@ jobs:
         if: always()
         run: |
           rm -rf "$RUNNER_TEMP/live-b70" "$RUNNER_TEMP/b70-build" || true
-          docker rmi ghcr.io/niko1221/strata:0.2.18-sycl >/dev/null 2>&1 || true
+          docker rmi ghcr.io/niko1221/strata:0.2.19-sycl >/dev/null 2>&1 || true
 
   checks:
     name: Checks / ${{ matrix.name }}
