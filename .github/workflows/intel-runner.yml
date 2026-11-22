@@ -318,8 +318,13 @@ jobs:
           ls -lh "$SQ10" "$INK_VIS"
           "$INK_DIR/strata-inkling" --info "$SQ10" --vision "$INK_VIS"
           ONEAPI_DEVICE_SELECTOR=level_zero:gpu stdbuf -oL -eL "$INK_DIR/strata-inkling" --selfcheck --native "$SQ10"
-          ONEAPI_DEVICE_SELECTOR=level_zero:gpu stdbuf -oL -eL "$INK_DIR/strata-inkling" --bench --native "$SQ10" --parallel 1 --prompt-len 64 --gen 32
-          ONEAPI_DEVICE_SELECTOR=level_zero:gpu stdbuf -oL -eL "$INK_DIR/strata-inkling" --bench --native "$SQ10" --parallel 8 --prompt-len 64 --gen 32
+          echo "== Diagnostic: oneMKL L0-V1 (UR_LOADER_USE_LEVEL_ZERO_V2=0) vs native SG16 (INK_SYCL_NO_XMX=1) on B70 =="
+          set +e
+          ONEAPI_DEVICE_SELECTOR=level_zero:gpu UR_LOADER_USE_LEVEL_ZERO_V2=0 stdbuf -oL -eL "$INK_DIR/strata-inkling" --bench --native "$SQ10" --parallel 1 --prompt-len 64 --gen 32
+          echo "--> strata-inkling bench c=1 (oneMKL L0-V1) rc=$?"
+          set -e
+          ONEAPI_DEVICE_SELECTOR=level_zero:gpu INK_SYCL_NO_XMX=1 stdbuf -oL -eL "$INK_DIR/strata-inkling" --bench --native "$SQ10" --parallel 1 --prompt-len 64 --gen 32
+          ONEAPI_DEVICE_SELECTOR=level_zero:gpu INK_SYCL_NO_XMX=1 stdbuf -oL -eL "$INK_DIR/strata-inkling" --bench --native "$SQ10" --parallel 8 --prompt-len 64 --gen 32
           rm -f "$SQ10" "$INK_VIS"
 
           echo "== Live Inkling-2-Mini .gguf (UD-Q2_K_XL) loading check on Arc Pro B70 32 GB =="
